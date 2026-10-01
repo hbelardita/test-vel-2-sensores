@@ -25,14 +25,14 @@ const uint8_t PIN_LED_TEST = 13;
 // Lógica de detección óptica (LOW sobre blanco para comparador estándar LM393)
 const uint8_t DETECTA_BLANCO = LOW;
 
-// Parámetros de velocidad PWM calibrados para alta velocidad en recta
-const int VELOCIDAD_BASE        = 175; // Incremento de velocidad en tramos rectos
-const int VELOCIDAD_MAX         = 250; // Empuje máximo en corrección y avance
-const int VELOCIDAD_REVERSA_MAX = 140; // Límite de contra-rotación en curva cerrada
+// Parámetros de velocidad PWM calibrados
+const int VELOCIDAD_BASE        = 170; // Velocidad de avance continuo
+const int VELOCIDAD_MAX         = 255; // Máxima aceleración en motor exterior
+const int VELOCIDAD_REVERSA_MAX = 170; // Autoridad incrementada para giro en curva
 
 // Ganancias del controlador
-const float KP = 130.0f;
-const float KD = 45.0f;
+const float KP = 135.0f;
+const float KD = 50.0f;
 
 // Intervalo de muestreo del bucle de control en milisegundos
 const unsigned long INTERVALO_MS = 5;
@@ -89,16 +89,16 @@ float calcularError(EstadoSeguimiento estado) {
       ultimoGiroRecuperacion = 0.0f;
       return 0.0f;
 
-    // Corrección moderada en recta para evitar sobre-oscilación (zigzag)
+    // Mayor caída de velocidad en la rueda interna para cerrar más el radio de giro
     case ESTADO_CORRECCION_IZQ:
-      ultimoGiroRecuperacion = -1.8f;
-      return -0.55f;
+      ultimoGiroRecuperacion = -2.0f;
+      return -0.85f;
 
     case ESTADO_CORRECCION_DER:
-      ultimoGiroRecuperacion = 1.8f;
-      return 0.55f;
+      ultimoGiroRecuperacion = 2.0f;
+      return 0.85f;
 
-    // Contra-rotación fuerte solo cuando el robot pierde la línea en curva
+    // Contra-rotación reforzada ante pérdida de línea en curvas cerradas
     case ESTADO_LINEA_PERDIDA:
       return ultimoGiroRecuperacion;
 
