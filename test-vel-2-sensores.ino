@@ -1,5 +1,10 @@
 #include <Arduino.h>
 
+// Modo de telemetria por puerto serie:
+// 1 = Habilitada para calibracion y diagnostico en banco.
+// 0 = Modo competicion (desactiva el UART, ahorra RAM y optimiza el tiempo de ciclo del bucle de control).
+#define HABILITAR_TELEMETRIA 0
+
 // Definición de pines para Motor Izquierdo
 const uint8_t PIN_ENA = 5;
 const uint8_t PIN_IN1 = 4;
@@ -20,14 +25,14 @@ const uint8_t PIN_LED_TEST = 13;
 // Lógica de detección óptica (LOW sobre blanco para comparador estándar LM393)
 const uint8_t DETECTA_BLANCO = LOW;
 
-// Parámetros de velocidad PWM
-const int VELOCIDAD_BASE        = 135;
-const int VELOCIDAD_MAX         = 220;
-const int VELOCIDAD_REVERSA_MAX = 150; // Potencia máxima de contra-rotación en curva
+// Parámetros de velocidad PWM calibrados para alta velocidad en recta
+const int VELOCIDAD_BASE        = 175; // Incremento de velocidad en tramos rectos
+const int VELOCIDAD_MAX         = 250; // Empuje máximo en corrección y avance
+const int VELOCIDAD_REVERSA_MAX = 140; // Límite de contra-rotación en curva cerrada
 
-// Ganancias del controlador para giro sobre su eje
-const float KP = 160.0f;
-const float KD = 60.0f;
+// Ganancias del controlador
+const float KP = 130.0f;
+const float KD = 45.0f;
 
 // Intervalo de muestreo del bucle de control en milisegundos
 const unsigned long INTERVALO_MS = 5;
@@ -50,7 +55,10 @@ struct LecturaSensores {
 float ultimoError = 0.0f;
 float ultimoGiroRecuperacion = 0.0f;
 unsigned long tiempoAnterior = 0;
+
+#if HABILITAR_TELEMETRIA
 unsigned long tiempoTelemetria = 0;
+#endif
 
 LecturaSensores leerSensores() {
   LecturaSensores lectura;
@@ -81,14 +89,16 @@ float calcularError(EstadoSeguimiento estado) {
       ultimoGiroRecuperacion = 0.0f;
       return 0.0f;
 
+    // Corrección moderada en recta para evitar sobre-oscilación (zigzag)
     case ESTADO_CORRECCION_IZQ:
-      ultimoGiroRecuperacion = -1.5f;
-      return -1.0f;
+      ultimoGiroRecuperacion = -1.8f;
+      return -0.55f;
 
     case ESTADO_CORRECCION_DER:
-      ultimoGiroRecuperacion = 1.5f;
-      return 1.0f;
+      ultimoGiroRecuperacion = 1.8f;
+      return 0.55f;
 
+    // Contra-rotación fuerte solo cuando el robot pierde la línea en curva
     case ESTADO_LINEA_PERDIDA:
       return ultimoGiroRecuperacion;
 
@@ -135,7 +145,9 @@ void detenerMotores() {
 }
 
 void setup() {
+#if HABILITAR_TELEMETRIA
   Serial.begin(115200);
+#endif
 
   pinMode(PIN_ENA, OUTPUT);
   pinMode(PIN_IN1, OUTPUT);
@@ -177,6 +189,7 @@ void loop() {
 
   fijarMotores(velocidadIzq, velocidadDer);
 
+#if HABILITAR_TELEMETRIA
   if (tiempoActual - tiempoTelemetria >= 100) {
     tiempoTelemetria = tiempoActual;
     Serial.print(F("Izq: "));
@@ -192,4 +205,5 @@ void loop() {
     Serial.print(F(" | PWM_D: "));
     Serial.println(velocidadDer);
   }
+#endif
 }
