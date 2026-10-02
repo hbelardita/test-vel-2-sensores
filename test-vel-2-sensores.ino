@@ -22,13 +22,17 @@ const uint8_t PIN_SENSOR_DER = 3;
 // Pin del LED integrado para diagnóstico visual en placa
 const uint8_t PIN_LED_TEST = 13;
 
+// Pin del pulsador de arranque en chasis
+const uint8_t PIN_PULSADOR = 7;
+const uint8_t PULSADOR_PRESIONADO = LOW;
+
 // Lógica de detección óptica (LOW sobre blanco para comparador estándar LM393)
 const uint8_t DETECTA_BLANCO = LOW;
 
-// Parámetros de velocidad PWM calibrados
-const int VELOCIDAD_BASE        = 170; // Velocidad de avance continuo
-const int VELOCIDAD_MAX         = 255; // Máxima aceleración en motor exterior
-const int VELOCIDAD_REVERSA_MAX = 170; // Autoridad incrementada para giro en curva
+// Parámetros de velocidad PWM para alta velocidad en recta y curva rápida
+const int VELOCIDAD_BASE        = 180; // Aumento de velocidad de crucero en recta
+const int VELOCIDAD_MAX         = 255; // 100% ciclo de trabajo en motor exterior
+const int VELOCIDAD_REVERSA_MAX = 170; // Contra-rotación de rescate en línea perdida
 
 // Ganancias del controlador
 const float KP = 135.0f;
@@ -36,6 +40,9 @@ const float KD = 50.0f;
 
 // Intervalo de muestreo del bucle de control en milisegundos
 const unsigned long INTERVALO_MS = 5;
+
+// Ventana temporal para distinguir roce transitorio en recta de curva sostenida (en ms)
+const unsigned long TIEMPO_FILTRO_CURVA_MS = 25;
 
 // Modelado de estados de seguimiento de línea
 enum EstadoSeguimiento {
@@ -51,10 +58,18 @@ struct LecturaSensores {
   bool derDetectaBlanco;
 };
 
+// Modelado del modo operativo del robot
+enum ModoRobot {
+  MODO_STANDBY,
+  MODO_CARRERA
+};
+
 // Variables de estado interno
+ModoRobot modoActual = MODO_STANDBY;
 float ultimoError = 0.0f;
 float ultimoGiroRecuperacion = 0.0f;
 unsigned long tiempoAnterior = 0;
+unsigned long tiempoInicioDeteccion = 0;
 
 #if HABILITAR_TELEMETRIA
 unsigned long tiempoTelemetria = 0;
@@ -83,26 +98,42 @@ EstadoSeguimiento clasificarEstado(LecturaSensores lectura) {
   return ESTADO_INTERSECCION;
 }
 
-float calcularError(EstadoSeguimiento estado) {
+float calcularError(EstadoSeguimiento estado, unsigned long tiempoActual) {
   switch (estado) {
     case ESTADO_CENTRO:
       ultimoGiroRecuperacion = 0.0f;
+      tiempoInicioDeteccion = 0;
       return 0.0f;
 
-    // Mayor caída de velocidad en la rueda interna para cerrar más el radio de giro
     case ESTADO_CORRECCION_IZQ:
+      if (tiempoInicioDeteccion == 0) {
+        tiempoInicioDeteccion = tiempoActual;
+      }
       ultimoGiroRecuperacion = -2.0f;
-      return -0.85f;
+      // Roce leve en recta: corrección sutil para mantener avance recto
+      if (tiempoActual - tiempoInicioDeteccion < TIEMPO_FILTRO_CURVA_MS) {
+        return -0.45f;
+      }
+      // Curva rápida: sostiene rueda interna en avance positivo (~93 PWM) y exterior al 100% (255 PWM)
+      return -0.68f;
 
     case ESTADO_CORRECCION_DER:
+      if (tiempoInicioDeteccion == 0) {
+        tiempoInicioDeteccion = tiempoActual;
+      }
       ultimoGiroRecuperacion = 2.0f;
-      return 0.85f;
+      if (tiempoActual - tiempoInicioDeteccion < TIEMPO_FILTRO_CURVA_MS) {
+        return 0.45f;
+      }
+      return 0.68f;
 
-    // Contra-rotación reforzada ante pérdida de línea en curvas cerradas
+    // Rescate agresivo con contra-rotación inmediata si pierde la línea por inercia
     case ESTADO_LINEA_PERDIDA:
+      tiempoInicioDeteccion = 0;
       return ultimoGiroRecuperacion;
 
     case ESTADO_INTERSECCION:
+      tiempoInicioDeteccion = 0;
       return 0.0f;
   }
   return 0.0f;
@@ -158,15 +189,37 @@ void setup() {
   pinMode(PIN_IN4, OUTPUT);
 
   pinMode(PIN_LED_TEST, OUTPUT);
+  digitalWrite(PIN_LED_TEST, LOW);
+
+  pinMode(PIN_PULSADOR, INPUT_PULLUP);
 
   pinMode(PIN_SENSOR_IZQ, INPUT_PULLUP);
   pinMode(PIN_SENSOR_DER, INPUT_PULLUP);
 
   detenerMotores();
-  delay(1000);
 }
 
 void loop() {
+  if (modoActual == MODO_STANDBY) {
+    detenerMotores();
+    digitalWrite(PIN_LED_TEST, LOW);
+
+    if (digitalRead(PIN_PULSADOR) == PULSADOR_PRESIONADO) {
+      delay(50);
+      if (digitalRead(PIN_PULSADOR) == PULSADOR_PRESIONADO) {
+        while (digitalRead(PIN_PULSADOR) == PULSADOR_PRESIONADO) {
+          delay(10);
+        }
+        delay(20);
+        modoActual = MODO_CARRERA;
+        digitalWrite(PIN_LED_TEST, HIGH);
+        tiempoAnterior = millis();
+        ultimoError = 0.0f;
+      }
+    }
+    return;
+  }
+
   unsigned long tiempoActual = millis();
   if (tiempoActual - tiempoAnterior < INTERVALO_MS) {
     return;
@@ -174,10 +227,9 @@ void loop() {
   tiempoAnterior = tiempoActual;
 
   LecturaSensores lectura = leerSensores();
-  digitalWrite(PIN_LED_TEST, (lectura.izqDetectaBlanco || lectura.derDetectaBlanco) ? HIGH : LOW);
 
   EstadoSeguimiento estado = clasificarEstado(lectura);
-  float error = calcularError(estado);
+  float error = calcularError(estado, tiempoActual);
 
   float derivada = error - ultimoError;
   ultimoError = error;
